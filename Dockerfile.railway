@@ -20,7 +20,7 @@ function walk(dir) {
     const beforeText = fs.readFileSync(file, 'utf8');
     const before = (beforeText.match(/read_insights/g) || []).length;
     if (!before) continue;
-    const afterText = beforeText.replace(/["']read_insights["'],?/g, '');
+    const afterText = beforeText.replace(/[\"']read_insights[\"'],?/g, '');
     const after = (afterText.match(/read_insights/g) || []).length;
     if (after < before) {
       removed += before - after;
@@ -57,3 +57,7 @@ if (remaining.length) {
 }
 console.log('facebook_oauth_patch=verified');
 NODE
+
+# Override base image ENTRYPOINT to allow Railway startCommand to execute
+ENTRYPOINT ["/bin/sh", "-c"]
+
