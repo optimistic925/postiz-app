@@ -1,0 +1,65 @@
+FROM ghcr.io/gitroomhq/postiz-app:v2.23.0
+
+RUN node - <<'NODE'
+const fs = require('fs');
+const path = require('path');
+
+const roots = ['/app/apps/backend/dist', '/app/libraries'];
+const obsoleteScopes = ['read_insights', 'instagram_manage_insights'];
+const removed = Object.fromEntries(obsoleteScopes.map((s) => [s, 0]));
+let scanned = 0;
+let imageModelPatched = 0;
+
+function walk(dir) {
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const file = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name !== 'node_modules') walk(file);
+      continue;
+    }
+    if (!entry.isFile() || !file.endsWith('.js')) continue;
+    scanned++;
+    let text = fs.readFileSync(file, 'utf8');
+    let changed = false;
+
+    for (const scope of obsoleteScopes) {
+      const before = (text.match(new RegExp(scope, 'g')) || []).length;
+      if (!before) continue;
+      text = text.replace(new RegExp(`[\\"']${scope}[\\"'],?`, 'g'), '');
+      const after = (text.match(new RegExp(scope, 'g')) || []).length;
+      if (after < before) {
+        removed[scope] += before - after;
+        changed = true;
+        console.log(`patched ${file}: removed ${scope} x${before - after}`);
+      }
+    }
+
+    const oldModel = 'chatgpt-image-latest';
+    const modelBefore = (text.match(new RegExp(oldModel, 'g')) || []).length;
+    if (modelBefore) {
+      text = text.replace(new RegExp(oldModel, 'g'), 'gpt-image-2');
+      imageModelPatched += modelBefore;
+      changed = true;
+      console.log(`patched ${file}: ${oldModel} -> gpt-image-2 x${modelBefore}`);
+    }
+
+    if (changed) fs.writeFileSync(file, text);
+  }
+}
+
+for (const root of roots) walk(root);
+console.log(`scanned_js=${scanned} removed=${JSON.stringify(removed)} image_model_patches=${imageModelPatched}`);
+
+if (removed.read_insights < 1) {
+  throw new Error('Facebook OAuth patch failed: read_insights was not removed');
+}
+if (imageModelPatched < 1) {
+  throw new Error('Image model patch failed: chatgpt-image-latest was not found');
+}
+
+console.log('oauth_and_image_model_patch=verified');
+NODE
+
+# Allow Railway's explicit start command to control the base image.
+ENTRYPOINT ["/bin/sh", "-c"]
