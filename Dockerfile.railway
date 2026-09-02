@@ -1,4 +1,4 @@
-FROM ghcr.io/gitroomhq/postiz-app:v2.11.3
+FROM ghcr.io/gitroomhq/postiz-app:v2.23.0
 
 RUN node - <<'NODE'
 const fs = require('fs');
@@ -45,40 +45,7 @@ if (removed.read_insights < 1) {
   throw new Error('Facebook OAuth patch failed: read_insights was not removed');
 }
 
-// Patch compiled backend startup so a slow/hung MCP initialization cannot
-// prevent Nest from binding to port 3000. MCP still initializes in-process,
-// but it no longer blocks app.listen().
-const mainCandidates = [
-  '/app/apps/backend/dist/apps/backend/src/main.js',
-  '/app/apps/backend/dist/main.js'
-];
-let startupPatched = false;
-for (const mainFile of mainCandidates) {
-  if (!fs.existsSync(mainFile)) continue;
-  let text = fs.readFileSync(mainFile, 'utf8');
-  const patterns = [
-    /await\s+\(0,\s*start_mcp_1\.startMcp\)\(app\);/,
-    /await\s+startMcp\(app\);/,
-    /await\s+[^;]*\.startMcp\)\(app\);/
-  ];
-  for (const pattern of patterns) {
-    if (!pattern.test(text)) continue;
-    text = text.replace(
-      pattern,
-      `Promise.resolve((0, start_mcp_1.startMcp)(app))\n      .then(() => console.log('MCP_INIT_READY'))\n      .catch((err) => console.error('MCP_INIT_ERROR', err));`
-    );
-    fs.writeFileSync(mainFile, text);
-    startupPatched = true;
-    console.log(`patched backend startup: ${mainFile}`);
-    break;
-  }
-}
-
-if (!startupPatched) {
-  throw new Error('Backend startup patch failed: startMcp await was not found');
-}
-
-console.log('oauth_and_mcp_startup_patch=verified');
+console.log('oauth_patch=verified');
 NODE
 
 # Allow Railway's explicit start command to control the base image.
