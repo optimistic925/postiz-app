@@ -4,11 +4,68 @@ RUN node - <<'NODE'
 const fs = require('fs');
 const path = require('path');
 
-const roots = ['/app/apps/backend/dist', '/app/libraries'];
+const roots = ['/app/apps/backend/dist', '/app/apps/orchestrator/dist', '/app/libraries'];
 const obsoleteScopes = ['read_insights', 'instagram_manage_insights'];
 const removed = Object.fromEntries(obsoleteScopes.map((s) => [s, 0]));
 let scanned = 0;
 let imageModelPatched = 0;
+let fileUploadPatched = 0;
+
+function patchUploadTool(text, file) {
+  if (!text.includes('uploadFromUrlTool') || !text.includes('The public URL of the image or video to upload')) {
+    return { text, changed: false };
+  }
+
+  let changed = false;
+
+  // Advertise the top-level `file` argument as an OpenAI file parameter.
+  if (!text.includes("'openai/fileParams'")) {
+    const next = text.replace(
+      /mcp\s*:\s*\{\s*annotations\s*:\s*\{/,
+      "mcp: { _meta: { 'openai/fileParams': ['file'] }, annotations: {"
+    );
+    if (next !== text) {
+      text = next;
+      changed = true;
+    }
+  }
+
+  // Keep URL uploads, but make URL optional and add an optional ChatGPT file ref.
+  if (!text.includes('A ChatGPT file attachment to upload')) {
+    const schemaPattern = /url\s*:\s*([A-Za-z0-9_$.]+)\.string\(\)\.url\(\)\.describe\((['"])The public URL of the image or video to upload\2\),/;
+    const match = text.match(schemaPattern);
+    if (match) {
+      const zref = match[1];
+      const replacement = `url: ${zref}.string().url().describe('The public URL of the image or video to upload').optional(),\n                file: ${zref}.any().optional().describe('A ChatGPT file attachment to upload'),`;
+      text = text.replace(schemaPattern, replacement);
+      changed = true;
+    }
+  }
+
+  // Use ChatGPT's temporary download_url when a file attachment is supplied.
+  if (!text.includes('Provide either a public URL or a ChatGPT file attachment.')) {
+    const fetchPattern = /const response = await fetch\(inputData\.url,\s*\{/;
+    const replacement = `const fileRef = inputData.file;\n                    const sourceUrl = fileRef && typeof fileRef === 'object' && fileRef.download_url\n                        ? fileRef.download_url\n                        : inputData.url;\n                    if (!sourceUrl) {\n                        return { error: 'Provide either a public URL or a ChatGPT file attachment.' };\n                    }\n                    const response = await fetch(sourceUrl, {`;
+    const next = text.replace(fetchPattern, replacement);
+    if (next !== text) {
+      text = next;
+      changed = true;
+    }
+  }
+
+  // Make the action label/description accurate for both supported sources.
+  text = text.replace(/title:\s*(['"])Upload Media From URL\1/g, "title: 'Upload Media'");
+  text = text.replace(
+    /Upload a remote image or video into the media library from a public URL\./g,
+    'Upload an image or video into the media library from a public URL or ChatGPT file attachment.'
+  );
+
+  if (changed) {
+    fileUploadPatched += 1;
+    console.log(`patched ${file}: enabled ChatGPT file attachments for uploadFromUrlTool`);
+  }
+  return { text, changed };
+}
 
 function walk(dir) {
   if (!fs.existsSync(dir)) return;
@@ -44,12 +101,16 @@ function walk(dir) {
       console.log(`patched ${file}: ${oldModel} -> gpt-image-2 x${modelBefore}`);
     }
 
+    const uploadPatch = patchUploadTool(text, file);
+    text = uploadPatch.text;
+    changed = changed || uploadPatch.changed;
+
     if (changed) fs.writeFileSync(file, text);
   }
 }
 
 for (const root of roots) walk(root);
-console.log(`scanned_js=${scanned} removed=${JSON.stringify(removed)} image_model_patches=${imageModelPatched}`);
+console.log(`scanned_js=${scanned} removed=${JSON.stringify(removed)} image_model_patches=${imageModelPatched} file_upload_patches=${fileUploadPatched}`);
 
 if (removed.read_insights < 1) {
   throw new Error('Facebook OAuth patch failed: read_insights was not removed');
@@ -57,8 +118,11 @@ if (removed.read_insights < 1) {
 if (imageModelPatched < 1) {
   throw new Error('Image model patch failed: chatgpt-image-latest was not found');
 }
+if (fileUploadPatched < 1) {
+  throw new Error('ChatGPT file upload patch failed: uploadFromUrlTool was not patched');
+}
 
-console.log('oauth_and_image_model_patch=verified');
+console.log('oauth_image_and_file_upload_patch=verified');
 NODE
 
 # Allow Railway's explicit start command to control the base image.
